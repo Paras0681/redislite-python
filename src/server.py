@@ -7,6 +7,7 @@ import errno
 import socket
 import select
 import time 
+from collections import deque
 
 from . import commands
 from . import resp
@@ -27,6 +28,9 @@ class RedisServer:
 
         self.storage = Storage()
 
+        # For BLPOP command
+        self.blocked_clients = {}
+        self.waiters_by_key = {}
 
     def start(self):
         self.server_socket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
@@ -44,8 +48,9 @@ class RedisServer:
     def _event_loop(self):
         while self.running:
             readable = [self.server_socket] + list(self.client_sockets)
+            writable = [s for s in self.client_sockets if self.out_buffers.get(s)]
 
-            ready_read, ready_write, ready_exception = select.select(readable, [], [], 1.0)
+            ready_read, ready_write, ready_exception = select.select(readable, writable, [], 1.0)
 
             if self.server_socket in ready_read:
                 self._accept_new_connection()
@@ -92,9 +97,96 @@ class RedisServer:
                 return
             if command is None:
                 break
-            if command:  # skip empty inline pings
+            # BLPOP flow
+            if command:
+                cmd_name = command[0].upper()
+                if cmd_name == "BLPOP":
+                    self._handle_blpop(client_socket, command[1:])
+                    continue
                 reply = commands.dispatch(self.storage, command)
                 self._queue_write(client_socket, reply)
+
+                if cmd_name in ("RPUSH", "LPUSH") and len(command) >= 2:
+                    self._resolve_waiters(command[1])
+
+    def _handle_blpop(self, client_socket, args):
+        """
+        BLPOP is Block-LPOP which blocks the key value and holds the client in waiting list.
+        It Blocks until timeout gets expired or until new data added inside key.
+        The client is registered as a waiter and gets NO reply until
+        it will be answered later by _resolve_waiters() (when someone
+        pushes) or _check_blpop_timeouts() (if the timeout expires first).
+        """
+        if len(args) < 2:
+            self._queue_write(client_socket,resp.encode_error("ERR wrong number of arguments for 'BLPOP' command."))
+            return 
+        
+        *keys, timeout_str = args
+        try:
+            key_timeout = float(timeout_str)
+        except ValueError:
+            self._queue_write(client_socket,resp.encode_error("ERR timeout value is not float or out of range."))
+
+        if key_timeout < 0:
+            self._queue_write(client_socket,resp.encode_error("ERR timeout cannot be negative."))
+
+        for key in keys:
+            try:
+                item = self.storage.lpop(key)
+            except TypeError:
+                self._queue_write(client_socket,resp.encode_error("WRONGTYPE Openration against key is holding wrong kind of value."))
+                return
+            if item is not None:
+                self._queue_write(client_socket, resp.encode_array([key, item]))
+                return
+        deadline = None if key_timeout == 0 else time.time()+key_timeout
+        self.blocked_clients[client_socket] = {"keys": keys, "deadline": deadline}
+        for key in keys:
+            self.waiters_by_key.setdefault(key, deque()).append(client_socket)
+
+
+    def _resolve_waiters(self, key):
+        """
+        resolve_waiters is called when any key is PUSH to handle the oldest waiter in the queue. 
+        """
+        queue = self.waiters_by_key.get(key)
+        if not queue:
+            return
+        while queue:
+            client_socket = queue[0]
+            if client_socket not in self.blocked_clients:
+                queue.popleft()
+                continue
+            item = self.storage.lpop(key)
+            if item is None:
+                break # nothing left to operate on
+            queue.popleft()
+            self._queue_write(client_socket, resp.encode_array([key, item]))
+            self._unblock_clients(client_socket)
+        if not queue:
+            self.waiters_by_key.pop(key, None)
+
+    def _unblock_clients(self, client_socket):
+        """
+        Removes waiters from the queue
+        """
+        info = self.blocked_clients.pop(client_socket)
+        if not info:
+            return
+        for key in info["keys"]:
+            q = self.waiters_by_key.get(key)
+            if q and client_socket in q:
+                q.remove(client_socket)
+            if q is not None and not q:
+                self.waiters_by_key.pop(key, None)
+
+    def _check_blpop_timeout(self):
+        now = time.time()
+        for client_socket, info in list(self.blocked_clients.items()):
+            deadline = info["deadline"]
+            if deadline is not None and now >= deadline:
+                self._queue_write(client_socket, resp.encode_null_array())
+                self._unblock_clients(client_socket)
 
     def _handle_client_writable(self, client_socket):
         buf = self.out_buffers.get(client_socket)

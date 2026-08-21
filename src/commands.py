@@ -7,16 +7,19 @@ AFTER the command name and returns byte-string i.e RESP-encoded byte string as a
 from . import resp
 
 def ping_command(storage, args):
+    """PING command is for the client to know that the server is working."""
     if not args:
         return resp.encode_simple_string("PONG")
     return resp.encode_bulk_string(args[0])
 
 def pong_command(storage, args):
+    """PONG command is same as the PING to check the working server."""
     if not args:
         return resp.encode_simple_string("PING")
     return resp.encode_bulk_string(args[0])
 
 def echo_command(storage, args):
+    """ECHO command copies the input text of the server"""
     if len(args) != 1:
         return resp.encode_error("ERR wrong number of arguments for 'ECHO' command.") 
     return resp.encode_bulk_string(args[0])
@@ -107,7 +110,6 @@ def lpop_command(storage, args):
 
 def rpop_command(storage, args):
     return _pop_command(storage, args, storage.rpop, "RPOP")
-
     
 COMMAND = {
     "PING": ping_command,
@@ -122,6 +124,7 @@ COMMAND = {
     "RPOP": rpop_command,
 
 }
+
 def dispatch(storage, parts):
     """
     parts is a list[str]: [COMMAND_NAME ARGS1 ARGS2 ...] which returns RESP byte string.

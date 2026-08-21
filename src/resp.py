@@ -18,15 +18,15 @@ class NeedMoreData(Exception):
     """Raised internally when the buffer doesn't yet hold a full frame."""
 
 def encode_simple_string(s: str) -> bytes:
-    "Basic string to RESP byte-string."
+    """Basic string to RESP byte-string."""
     return f"+{s}\r\n".encode()
 
 def encode_error(msg: str) -> bytes:
-    "Error RESP byte string."
+    """Error RESP byte string."""
     return f"-{msg}\r\n".encode()
 
 def encode_integer(n: int) -> bytes:
-    "Int in RESP byte string."
+    """Int in RESP byte string."""
     return f":{n}\r\n".encode()
 
 def encode_bulk_string(s: str) -> bytes:
@@ -38,9 +38,11 @@ def encode_bulk_string(s: str) -> bytes:
     return b"$" + str(len(s)).encode() + CRLF + s + CRLF
 
 def encode_null_array() -> bytes:
+    """Null array in RESP byte string."""
     return b"*-1\r\n"
 
 def encode_array(items) -> bytes:
+    """Array in RESP byte string."""
     if items is None:
         return encode_null_array()
     out = [f"*{len(items)}\r\n".encode()]
