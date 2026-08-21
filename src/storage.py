@@ -136,4 +136,42 @@ class Storage:
             del self._data[key]
         return popped
 
+    def xadd(self, key, entry_id, fields):
+        """fields is a flat list [f1 v1 f2 v2 ...] in RESP order."""
+        self._purge_if_expired(key)
 
+        if key not in self._data:
+            self._data[key] = Stream()
+        stream = self._data[key]
+        if not isinstance(stream, Stream):
+            raise TypeError("WRONGTYPE")
+
+        ms, seq = entry_id
+        if (ms, seq) == (0, 0):
+            raise StreamIDError(
+                "ERR The ID specified in XADD must be greater than 0-0"
+            )
+        if (ms,seq) <= stream.last_id:
+            raise StreamIDError(
+                "ERR the ID specified in XADD is equal or smaller than the target stream top item."
+            )
+        stream.entries.append((f"{ms-seq}", fields))
+        stream.last_id = (ms,seq)
+        return f"{ms}-{seq}"
+
+class StreamIDError(Exception):
+    """
+    Special Error class for stream datatype errors.
+    """
+
+class Stream:
+    """
+    Stream is a datatype in REDIS used to store dict data in ordered format
+    where it has ID-sequence key-field and a value-field i.e a dict
+    Important note: The individual entry is immutable but overall stream data is mutable as we can add, remove data
+    """
+    __slots__ = ("entries", "last_id")
+
+    def __init__(self):
+        self.entries = [] # list of (id_str, fields) in insertion order
+        self.last_id = (0,0) # (ms, seq) for Auto-ID and ordering

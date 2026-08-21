@@ -5,7 +5,7 @@ AFTER the command name and returns byte-string i.e RESP-encoded byte string as a
 """
 
 from . import resp
-
+from . import storage as storage_module
 def ping_command(storage, args):
     """PING command is for the client to know that the server is working."""
     if not args:
@@ -110,7 +110,39 @@ def lpop_command(storage, args):
 
 def rpop_command(storage, args):
     return _pop_command(storage, args, storage.rpop, "RPOP")
+
+def type_command(storage, args):
+    if len(args) != 1:
+        return resp.encode_error("ERR wrong number of arguments for 'TYPE' command.")
+    key = args[0]
+    TYPE_NAMES = {"str": "string", "list": "list", "NoneType": "none"}
+    name = storage.get_type(key)
+    if name is None:
+        type_name = "none"
+    else:
+        type_name = TYPE_NAMES.get(name, name)
+    return resp.encode_simple_string(type_name)
+
+def xadd_command(storage, args):
+    if len(args) < 4 or len(args)%2 != 0:
+        return resp.encode_error("ERR wrong number of arguments for 'XADD' command.")
+    key, raw_id = args[0], args[1]
+    fields = args[2:]
+    try:
+        ms_str,seq_str = raw_id.split('-')
+        entry_id = (int(ms_str),int(seq_str))
+    except ValueError:
+        return resp.encode_error("ERR invalid stream ID specified as stream command arguement.")
     
+    try:
+       new_id = storage.xadd(key, entry_id, fields)
+    except TypeError:
+        return resp.encode_error("WRONGTYPE of operation against key holding wrong value.")
+    except storage_module.StreamIDError as e:
+        return resp.encode_error(str(e))
+    
+    return resp.encode_simple_string(new_id)
+
 COMMAND = {
     "PING": ping_command,
     "PONG": pong_command,
@@ -122,6 +154,8 @@ COMMAND = {
     "LRANGE": lrange_command,
     "LPOP": lpop_command,
     "RPOP": rpop_command,
+    "TYPE": type_command,
+    "XADD": xadd_command,
 
 }
 
