@@ -136,7 +136,7 @@ class Storage:
             del self._data[key]
         return popped
 
-    def xadd(self, key, entry_id, fields):
+    def xadd(self, key, ms_str, seq_str, fields):
         """fields is a flat list [f1 v1 f2 v2 ...] in RESP order."""
         self._purge_if_expired(key)
 
@@ -146,7 +146,19 @@ class Storage:
         if not isinstance(stream, Stream):
             raise TypeError("WRONGTYPE")
 
-        ms, seq = entry_id
+        if seq_str == "*":
+            ms = int(ms_str)
+            last_ms, last_seq = stream.last_id
+            if ms == last_ms:
+                seq = last_seq+1
+            elif ms > last_ms:
+                seq = 0
+            else:
+                raise StreamIDError(
+                    "ERR The ID specified in XADD is equal or smaller than the target stream top item."
+                )
+        else:
+            ms, seq = int(ms_str), int(seq_str)
         if (ms, seq) == (0, 0):
             raise StreamIDError(
                 "ERR The ID specified in XADD must be greater than 0-0"

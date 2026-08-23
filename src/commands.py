@@ -124,23 +124,22 @@ def type_command(storage, args):
     return resp.encode_simple_string(type_name)
 
 def xadd_command(storage, args):
-    if len(args) < 4 or len(args)%2 != 0:
+    if len(args) < 3 or len(args)%2 != 0:
         return resp.encode_error("ERR wrong number of arguments for 'XADD' command.")
     key, raw_id = args[0], args[1]
     fields = args[2:]
+
+    if raw_id == "*":
+        ms_str = str(storage._now_ms())
+        seq_str = "*"
+    else:
+        ms_str, _, seq_str = raw_id.partition("-")
     try:
-        ms_str,seq_str = raw_id.split('-')
-        entry_id = (int(ms_str),int(seq_str))
-    except ValueError:
-        return resp.encode_error("ERR invalid stream ID specified as stream command arguement.")
-    
-    try:
-       new_id = storage.xadd(key, entry_id, fields)
+       new_id = storage.xadd(key, ms_str, seq_str, fields)
     except TypeError:
         return resp.encode_error("WRONGTYPE of operation against key holding wrong value.")
     except storage_module.StreamIDError as e:
         return resp.encode_error(str(e))
-    
     return resp.encode_simple_string(new_id)
 
 COMMAND = {
