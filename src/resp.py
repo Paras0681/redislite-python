@@ -41,13 +41,32 @@ def encode_null_array() -> bytes:
     """Null array in RESP byte string."""
     return b"*-1\r\n"
 
-def encode_array(items) -> bytes:
+def encode_array(items: list) -> bytes:
     """Array in RESP byte string."""
     if items is None:
         return encode_null_array()
     out = [f"*{len(items)}\r\n".encode()]
     for item in items:
         out.append(encode_bulk_string(item))
+    return b"".join(out)
+
+def encode_nested_array(entries: list) -> bytes:
+    """Array in RESP """
+    out = [f"*{len(entries)}\r\n".encode()]
+    for entry_id, fields in entries:
+        out.append(b"*2\r\n")
+        out.append(encode_bulk_string(entry_id)) 
+        out.append(encode_array(fields))
+    return b"".join(out) 
+
+def encode_xread_result(streams_result: list) -> bytes:
+    if not streams_result:
+        return b"*-1\r\n"
+    out = [f"*{len(streams_result)}\r\n".encode()]
+    for key, entries in streams_result:
+        out.append(b"*2\r\n")
+        out.append(encode_bulk_string(key))
+        out.append(encode_nested_array(entries))
     return b"".join(out)
 
 

@@ -136,6 +136,7 @@ class Storage:
             del self._data[key]
         return popped
 
+    # Stream ops
     def xadd(self, key, ms_str, seq_str, fields):
         """fields is a flat list [f1 v1 f2 v2 ...] in RESP order."""
         self._purge_if_expired(key)
@@ -170,6 +171,52 @@ class Storage:
         stream.entries.append((f"{ms-seq}", fields))
         stream.last_id = (ms,seq)
         return f"{ms}-{seq}"
+
+    def parse_stream_id(self, id_str, is_start=True):
+        if "-" in id_str:
+            ms_str, seq_str = id_str.split("-")
+            return int(ms_str), int(seq_str)
+        ms = int(id_str)
+        return (ms, 0) if is_start else (ms, float("inf"))
+        
+    def x_range(self, key, start_str, end_str, count=None):
+        self._purge_if_expired(key)
+        stream = self._data.get(key)
+        if stream is None:
+            return []
+        if not isinstance(stream, Stream):
+            raise TypeError("WRONGTYPE")
+
+        start = (0,0) if start_str == "-" else self.parse_stream_id(start_str, is_start=True)
+        end = (float("inf"),float("inf")) if end_str == "+" else self.parse_stream_id(end_str, is_start=False)
+
+        result=[]
+        for id_str, fields in stream.entries:
+            entry_id = self.parse_stream_id(id_str)
+            if start <= entry_id <= end:
+                result.append((id_str, fields))
+                if len(result) == count:
+                    break
+        return result
+
+    def x_read(self, key, start_id, count=None):
+        self._purge_if_expired(key)
+        stream = self._data.get(key)
+        if stream is None:
+            return []
+        if not isinstance(stream, Stream):
+            raise TypeError("WRONGTYPE")
+        start = self.parse_stream_id(start_id, is_start=True)
+        result = []
+        for id_str, fields in stream.entries:
+            entry_id = self.parse_stream_id(id_str)
+            if entry_id > start:
+                result.append((id_str, fields))
+                if len(result) == count:
+                    break
+        return result
+
+    
 
 class StreamIDError(Exception):
     """

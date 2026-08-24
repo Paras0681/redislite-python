@@ -142,6 +142,53 @@ def xadd_command(storage, args):
         return resp.encode_error(str(e))
     return resp.encode_simple_string(new_id)
 
+def x_range_command(storage, args):
+    if len(args) < 3:
+        return resp.encode_error("ERR wrong number of arguements for 'XRANGE' command.")
+    key = args[0]
+    start_str = args[1]
+    end_str = args[2]
+    count = None
+    if len(args) == 5 and args[3].upper() == "COUNT":
+        count = int(args[4])
+    result =  storage.x_range(key, start_str, end_str, count)
+    return resp.encode_nested_array(result)
+
+def x_read_command(storage, args):
+    args_upper = [a.upper() for a in args]
+    if "STREAMS" not in args_upper:
+        return resp.encode_error("ERR syntax error")
+    streams_idx = args_upper.index("STREAMS")
+    
+    count = None
+    if "COUNT" in args_upper:
+        count_idx = args_upper.index("COUNT")
+        if count_idx + 1 >= len(args):
+            return resp.encode_error("ERR syntax error")
+        try:
+            count = int(args[count_idx + 1])
+        except ValueError:
+            return resp.encode_error("ERR value is not an integer or out of range.")
+
+    streams_result = []
+    rest = args[streams_idx + 1:]
+    if len(rest) < 2 or len(rest) % 2 != 0:
+        return resp.encode_error("ERR wrong number of arguments for 'XREAD' command.")
+
+    n = len(rest) // 2
+    keys = rest[:n]
+    ids = rest[n:]
+    try:
+        for key, start_id in zip(keys, ids):
+            entries = storage.x_read(key, start_id, count)
+            if entries:
+                streams_result.append((key, entries))
+    except TypeError:
+        return resp.encode_error("WRONGTYPE Operation against a key holding the wrong kind of value")
+
+    return resp.encode_xread_result(streams_result)
+
+
 COMMAND = {
     "PING": ping_command,
     "PONG": pong_command,
@@ -155,7 +202,8 @@ COMMAND = {
     "RPOP": rpop_command,
     "TYPE": type_command,
     "XADD": xadd_command,
-
+    "XRANGE": x_range_command,
+    "XREAD": x_read_command,
 }
 
 def dispatch(storage, parts):
