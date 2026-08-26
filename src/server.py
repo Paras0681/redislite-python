@@ -32,6 +32,10 @@ class RedisServer:
         self.blocked_clients = {}
         self.waiters_by_key = {}
 
+        # For XREAD command
+        self.blocked_xread_clients = {}
+        self.waiters_by_stream = {}
+
     def start(self):
         self.server_socket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
@@ -58,6 +62,19 @@ class RedisServer:
 
             for sock in ready_read:
                 self._handle_client_readable(sock)
+
+            self._check_timeouts(
+                self.blocked_clients, 
+                self.waiters_by_key,
+                lambda info: info["keys"], 
+                resp.encode_null_array()
+            )
+            self._check_timeouts(
+                self.blocked_xread_clients, 
+                self.waiters_by_stream,
+                lambda info: info["streams"].keys(), 
+                resp.encode_null_array()
+            )
 
     def _accept_new_connection(self):
         try:
@@ -97,17 +114,93 @@ class RedisServer:
                 return
             if command is None:
                 break
-            # BLPOP flow
             if command:
                 cmd_name = command[0].upper()
+                # BLPOP flow
                 if cmd_name == "BLPOP":
                     self._handle_blpop(client_socket, command[1:])
                     continue
+                 # XREAD flow
+                if cmd_name == "XREAD":
+                    args_upper = [a.upper() for a in command[1:]]
+                    if "BLOCK" in args_upper:
+                        self._handle_xread_block(client_socket, command[1:])
+                        continue
+
                 reply = commands.dispatch(self.storage, command)
                 self._queue_write(client_socket, reply)
 
                 if cmd_name in ("RPUSH", "LPUSH") and len(command) >= 2:
                     self._resolve_waiters(command[1])
+
+    def _handle_xread_block(self, client_socket, args):
+        args_upper = [a.upper() for a in args]
+
+        if "STREAMS" not in args_upper:
+            self._queue_write(client_socket, resp.encode_error("ERR syntax error"))
+            return
+        streams_idx = args_upper.index("STREAMS")
+
+        block_idx = args_upper.index("BLOCK")
+        if block_idx + 1 >= len(args):
+            self._queue_write(client_socket, resp.encode_error("ERR syntax error"))
+            return
+        try:
+            block_ms = int(args[block_idx + 1])
+        except ValueError:
+            self._queue_write(client_socket, resp.encode_error("ERR timeout is not an integer or out of range"))
+            return
+        if block_ms < 0:
+            self._queue_write(client_socket, resp.encode_error("ERR timeout is negative"))
+            return
+
+        count = None
+        if "COUNT" in args_upper:
+            count_idx = args_upper.index("COUNT")
+            if count_idx + 1 >= len(args):
+                self._queue_write(client_socket, resp.encode_error("ERR syntax error"))
+                return
+            try:
+                count = int(args[count_idx + 1])
+            except ValueError:
+                self._queue_write(client_socket, resp.encode_error("ERR value is not an integer or out of range."))
+                return
+
+        rest = args[streams_idx + 1:]
+        if len(rest) < 2 or len(rest) % 2 != 0:
+            self._queue_write(client_socket, resp.encode_error("ERR wrong number of arguments for 'XREAD' command."))
+            return
+        n = len(rest) // 2
+        keys = rest[:n]
+        ids = rest[n:]
+
+        # Resolve "$" NOW, at call-start, per stream.
+        resolved = {}
+        for key, start_id in zip(keys, ids):
+            if start_id == "$":
+                resolved[key] = self.storage.last_stream_id(key)
+            else:
+                resolved[key] = start_id
+
+        # Try immediately, non-blocking, before registering as a waiter.
+        streams_result = []
+        try:
+            for key, start_id in resolved.items():
+                entries = self.storage.x_read(key, start_id, count)
+                if entries:
+                    streams_result.append((key, entries))
+        except TypeError:
+            self._queue_write(client_socket, resp.encode_error("WRONGTYPE Operation against a key holding the wrong kind of value"))
+            return
+
+        if streams_result:
+            self._queue_write(client_socket, resp.encode_xread_result(streams_result))
+            return
+
+        deadline = None if block_ms == 0 else time.time() + block_ms / 1000
+        self.blocked_xread_clients[client_socket] = {"streams": resolved, "count": count, "deadline": deadline}
+        for key in resolved:
+            self.waiters_by_stream.setdefault(key, deque()).append(client_socket)
 
     def _handle_blpop(self, client_socket, args):
         """
@@ -115,7 +208,7 @@ class RedisServer:
         It Blocks until timeout gets expired or until new data added inside key.
         The client is registered as a waiter and gets NO reply until
         it will be answered later by _resolve_waiters() (when someone
-        pushes) or _check_blpop_timeouts() (if the timeout expires first).
+        pushes) or _check_timeouts() (if the timeout expires first).
         """
         if len(args) < 2:
             self._queue_write(client_socket,resp.encode_error("ERR wrong number of arguments for 'BLPOP' command."))
@@ -162,31 +255,53 @@ class RedisServer:
                 break # nothing left to operate on
             queue.popleft()
             self._queue_write(client_socket, resp.encode_array([key, item]))
-            self._unblock_clients(client_socket)
+            self._unblock(client_socket, self.blocked_clients, self.waiters_by_key,
+              lambda info: info["keys"])
+
         if not queue:
             self.waiters_by_key.pop(key, None)
 
-    def _unblock_clients(self, client_socket):
+    def _resolve_xread_waiters(self, key):
+        queue = self.waiters_by_stream.get(key)
+        if not queue:
+            return
+        for client_socket in list(queue):
+            info = self.blocked_xread_clients.get(client_socket)
+            if info is None:
+                continue
+            streams_result = []
+            for k, start_id in info["streams"].items():
+                entries = self.storage.x_read(k, start_id, info["count"])
+                if entries:
+                    streams_result.append((k, entries))
+            if streams_result:
+                self._queue_write(client_socket, resp.encode_xread_result(streams_result))
+                self._unblock(client_socket, self.blocked_xread_clients, self.waiters_by_stream,
+                            lambda i: i["streams"].keys())
+
+    def _unblock(self, client_socket, blocked_dict, waiters_dict, key_iter):
         """
-        Removes waiters from the queue
+        Removes client from the blocked_dict and waiter queue
+        in waiter_dict it was registered under. key_iter info must return
+        keys/streams that client was waiting on.
         """
-        info = self.blocked_clients.pop(client_socket)
+        info = blocked_dict.pop(client_socket, None)
         if not info:
             return
-        for key in info["keys"]:
-            q = self.waiters_by_key.get(key)
+        for key in key_iter(info):
+            q = waiters_dict.get(key)
             if q and client_socket in q:
                 q.remove(client_socket)
             if q is not None and not q:
-                self.waiters_by_key.pop(key, None)
+                self.waiters_dict.pop(key, None)
 
-    def _check_blpop_timeout(self):
+    def _check_timeouts(self, blocked_dict, waiters_dict, key_iter, timeout_reply):
         now = time.time()
-        for client_socket, info in list(self.blocked_clients.items()):
+        for client_socket, info in list(blocked_dict.items()):
             deadline = info["deadline"]
             if deadline is not None and now >= deadline:
-                self._queue_write(client_socket, resp.encode_null_array())
-                self._unblock_clients(client_socket)
+                self._queue_write(client_socket, timeout_reply)
+                self._unblock(client_socket, blocked_dict, waiters_dict, key_iter)
 
     def _handle_client_writable(self, client_socket):
         buf = self.out_buffers.get(client_socket)
