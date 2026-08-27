@@ -216,7 +216,17 @@ class Storage:
                     break
         return result
 
-    
+    def last_stream_id(self, key):
+        self._purge_if_expired(key)
+        stream = self._data.get(key)
+        if stream is None:
+            return "0-0"
+        if not isinstance(stream, Stream):
+            raise TypeError("WRONGTYPE")
+        if not stream.entries:
+            return "0-0"
+        return stream.entries[-1][0] 
+
 
 class StreamIDError(Exception):
     """

@@ -133,6 +133,9 @@ class RedisServer:
                 if cmd_name in ("RPUSH", "LPUSH") and len(command) >= 2:
                     self._resolve_waiters(command[1])
 
+                if cmd_name == "XADD" and len(command) >= 2:
+                    self._resolve_xread_waiters(command[1])
+
     def _handle_xread_block(self, client_socket, args):
         args_upper = [a.upper() for a in args]
 
@@ -293,7 +296,7 @@ class RedisServer:
             if q and client_socket in q:
                 q.remove(client_socket)
             if q is not None and not q:
-                self.waiters_dict.pop(key, None)
+                waiters_dict.pop(key, None)
 
     def _check_timeouts(self, blocked_dict, waiters_dict, key_iter, timeout_reply):
         now = time.time()
