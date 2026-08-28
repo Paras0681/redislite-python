@@ -46,7 +46,7 @@ def rpush_command(storage, args):
     try:
         new_len = storage.rpush(key, values)
     except TypeError:
-        return resp.encode_error("WRONGTYPE wrong type of operation for key holding wrong kind of value.")
+        return resp.encode_error("WRONGTYPE of operation for key holding wrong kind of value.")
     return resp.encode_integer(new_len)
 
 def lpush_command(storage, args):
@@ -56,7 +56,7 @@ def lpush_command(storage, args):
     try:
         new_len = storage.lpush(key, values)
     except TypeError:
-        return resp.encode_error("WRONGTYPE wrong type of operation for key holding wrong kind of value.")
+        return resp.encode_error("WRONGTYPE of operation for key holding wrong kind of value.")
     return resp.encode_integer(new_len)
 
 def llen_command(storage, args):
@@ -65,7 +65,7 @@ def llen_command(storage, args):
     try:
         val = storage.llen(args[0])
     except TypeError:
-        return resp.encode_error("WRONGTYPE wrong type of operation for key holding wrong kind of value.")
+        return resp.encode_error("WRONGTYPE of operation for key holding wrong kind of value.")
     return resp.encode_integer(val)
 
 def lrange_command(storage, args):
@@ -80,7 +80,7 @@ def lrange_command(storage, args):
     try:
         items = storage.lrange(key, start, stop)
     except TypeError:
-        return resp.encode_error("WRONGTYPE Operation against a key holding the wrong kind of value")
+        return resp.encode_error("WRONGTYPE of operation against a key holding the wrong kind of value")
     return resp.encode_array(items)
 
 def _pop_command(storage, args, pop_fn, name):
@@ -99,7 +99,7 @@ def _pop_command(storage, args, pop_fn, name):
     try:
         result = pop_fn(key, count)
     except TypeError:
-        return resp.encode_error("WRONGTYPE Operation against a key holding the wrong kind of value")
+        return resp.encode_error("WRONGTYPE of operation against a key holding the wrong kind of value")
 
     if count is None:
         return resp.encode_bulk_string(result)
@@ -184,10 +184,21 @@ def x_read_command(storage, args):
             if entries:
                 streams_result.append((key, entries))
     except TypeError:
-        return resp.encode_error("WRONGTYPE Operation against a key holding the wrong kind of value")
+        return resp.encode_error("WRONGTYPE of operation against a key holding the wrong kind of value.")
 
     return resp.encode_xread_result(streams_result)
 
+def incr_command(storage, args):
+    if len(args) != 1:
+        return resp.encode_error("ERR wrong number of arguments for 'INCR' command.")
+    key = args[0]
+    try: 
+        result = storage.incr(key)
+    except TypeError:
+        return resp.encode_error("WRONGTYPE of operation against a key holding the wrong kind of value.")
+    except ValueError as e:
+        return resp.encode_error(str(e))
+    return resp.encode_integer(result)
 
 COMMAND = {
     "PING": ping_command,
@@ -204,6 +215,7 @@ COMMAND = {
     "XADD": xadd_command,
     "XRANGE": x_range_command,
     "XREAD": x_read_command,
+    "INCR": incr_command,
 }
 
 def dispatch(storage, parts):

@@ -227,6 +227,20 @@ class Storage:
             return "0-0"
         return stream.entries[-1][0] 
 
+    def incr(self, key):
+        self._purge_if_expired(key)
+        data = self._data.get(key)
+        if data is None:
+            data = 0
+        else:
+            try:
+                data = int(data)
+            except ValueError:
+                raise ValueError("ERR value is not an integer or out of range.")
+        data+=1
+        self._data[key] = str(data)
+        return data
+
 
 class StreamIDError(Exception):
     """
