@@ -60,6 +60,7 @@ def encode_nested_array(entries: list) -> bytes:
     return b"".join(out) 
 
 def encode_xread_result(streams_result: list) -> bytes:
+    """Stream encoding for RESP format output."""
     if not streams_result:
         return b"*-1\r\n"
     out = [f"*{len(streams_result)}\r\n".encode()]
@@ -67,6 +68,12 @@ def encode_xread_result(streams_result: list) -> bytes:
         out.append(b"*2\r\n")
         out.append(encode_bulk_string(key))
         out.append(encode_nested_array(entries))
+    return b"".join(out)
+
+def encode_array_of_replies(replies: list) -> bytes:
+    """Wraps a list of already-RESP-encoded replies into one array, without re-encoding them."""
+    out = [f"*{len(replies)}\r\n".encode()]
+    out.extend(replies)
     return b"".join(out)
 
 

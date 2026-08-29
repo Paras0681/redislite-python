@@ -15,6 +15,7 @@ class Storage:
         """
         self._data = {}
         self._expires = {}
+        self._versions = {} 
 
     def _now_ms(self):
         return int(time.time() * 1000)
@@ -22,12 +23,13 @@ class Storage:
     # Expiry helper functions 
     def _is_expired(self, key) -> bool:
         exp = self._expires.get(key)
-        return exp is not None and self._now_ms >= exp
+        return exp is not None and self._now_ms() >= exp
 
     def _purge_if_expired(self, key):
         if key in self._data and self._is_expired(key):
             del self._data[key]
             self._expires.pop(key, None)
+            self._bump(key)
 
     # Generic helper functionss
     def exists(self, key) -> bool:
@@ -39,6 +41,8 @@ class Storage:
         existed = key in self._data
         self._data.pop(key, None)
         self._expires.pop(key, None)
+        if existed:
+            self._bump(key) 
         return existed
 
     def get_type(self, key):
@@ -48,6 +52,29 @@ class Storage:
             return None
         return val[0] if isinstance(val, tuple) else type(val).__name__
 
+    
+    def incr(self, key):
+        self._purge_if_expired(key)
+        data = self._data.get(key)
+        if data is None:
+            data = 0
+        else:
+            try:
+                data = int(data)
+            except ValueError:
+                raise ValueError("ERR value is not an integer or out of range.")
+        data+=1
+        self._data[key] = str(data)
+        self._bump(key)
+        return data
+
+    def get_version(self, key):
+        self._purge_if_expired(key)
+        return self._versions.get(key, 0)
+
+    def _bump(self, key):
+        self._versions[key] = self._versions.get(key, 0)+1
+
     # String ops
     def set(self, key, value: str, px: int=None, ex: int=None):
         self._data[key] = value
@@ -56,6 +83,7 @@ class Storage:
             self._expires[key] = self._now_ms() + ex * 1000
         elif px is not None:
             self._expires[key] = self._now_ms() + px
+        self._bump(key) 
 
     def get(self, key):
         self._purge_if_expired(key)
@@ -78,12 +106,14 @@ class Storage:
         lst = self._get_list(key)
         lst.extend(values)
         self._data[key] = lst
+        self._bump(key)
         return len(lst)
 
     def lpush(self, key, values):
         lst = self._get_list(key)
         lst=values[::-1]+lst
         self._data[key]=lst
+        self._bump(key)
         return len(lst)
 
     def llen(self, key):
@@ -117,6 +147,7 @@ class Storage:
         del val[:n]
         if not val:
             del self._data[key]
+        self._bump(key)
         return popped
 
     def rpop(self, key, count=None):
@@ -134,6 +165,8 @@ class Storage:
             del val[-n:]
         if not val:
             del self._data[key]
+        if n:
+            self._bump(key)
         return popped
 
     # Stream ops
@@ -168,8 +201,9 @@ class Storage:
             raise StreamIDError(
                 "ERR the ID specified in XADD is equal or smaller than the target stream top item."
             )
-        stream.entries.append((f"{ms-seq}", fields))
+        stream.entries.append((f"{ms}-{seq}", fields))
         stream.last_id = (ms,seq)
+        self._bump(key)
         return f"{ms}-{seq}"
 
     def parse_stream_id(self, id_str, is_start=True):
@@ -226,21 +260,6 @@ class Storage:
         if not stream.entries:
             return "0-0"
         return stream.entries[-1][0] 
-
-    def incr(self, key):
-        self._purge_if_expired(key)
-        data = self._data.get(key)
-        if data is None:
-            data = 0
-        else:
-            try:
-                data = int(data)
-            except ValueError:
-                raise ValueError("ERR value is not an integer or out of range.")
-        data+=1
-        self._data[key] = str(data)
-        return data
-
 
 class StreamIDError(Exception):
     """
