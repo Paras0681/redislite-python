@@ -39,6 +39,15 @@ def get_command(storage, args):
     val = storage.get(args[0])
     return resp.encode_bulk_string(val)
 
+def del_command(storage, args):
+    if len(args) != 1:
+        return resp.encode_error("ERR wrong number of arguments for 'DEL' command.")
+    cnt = 0
+    for key in args:
+            if storage.delete(key):
+                cnt+=1
+    return resp.encode_integer(cnt)
+
 def rpush_command(storage, args):
     if len(args) < 2:
         return resp.encode_error("ERR wrong number of arguments for 'RPUSH' command.")
@@ -206,6 +215,7 @@ COMMAND = {
     "ECHO": echo_command,
     "SET": set_command,
     "GET": get_command,
+    "DEL": del_command,
     "RPUSH": rpush_command,
     "LLEN": llen_command,
     "LRANGE": lrange_command,
