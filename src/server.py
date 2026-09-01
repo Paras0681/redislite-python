@@ -34,12 +34,22 @@ class RedisServer:
             replicaof_port
         )
 
+        self.replica_sockets = set()
+        self.master_conn = None
+        self.master_reader = None
+
+
     def start(self):
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.setblocking(False)
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(128)
+
+        if self.replication_state.replicaof_host is not None:
+            self.master_conn = self._handle_replica_handshake()
+            self.master_conn.setblocking(False)
+            self.master_reader = resp.RESPReader()
 
         print(f"REdislite server listening on {self.host}:{self.port}")
         self._event_loop()
@@ -50,6 +60,8 @@ class RedisServer:
     def _event_loop(self):
         while self.running:
             readable = [self.server_socket] + list(self.client_sockets)
+            if self.master_conn is not None:
+                readable.append(self.master_conn)
             writable = [s for s in self.client_sockets if self.out_buffers.get(s)]
 
             ready_read, ready_write, ready_exception = select.select(readable, writable, [], 1.0)
@@ -57,6 +69,10 @@ class RedisServer:
             if self.server_socket in ready_read:
                 self._accept_new_connection()
                 ready_read.remove(self.server_socket)
+
+            if self.master_conn is not None and self.master_conn in ready_read:
+                self._handle_master_readable()
+                ready_read.remove(self.master_conn)
 
             for sock in ready_read:
                 self._handle_client_readable(sock)
@@ -81,6 +97,11 @@ class RedisServer:
 
     def _handle_replconf(self, client_socket, args):
         print(f"REPLCONF received: {args}")
+
+        if len(args) >= 2 and args[0].upper() == "GETACK" and args[1] == "*":
+            ack = resp.encode_array(["REPLCONF","ACK",str(self.replication_state.master_repl_offset)])
+            self._queue_write(client_socket, ack)
+            return
         self._queue_write(client_socket, resp.encode_simple_string("OK"))
 
     def _empty_rdb_bytes(self) -> bytes:
@@ -96,6 +117,62 @@ class RedisServer:
 
         rdb_bytes = self._empty_rdb_bytes()
         self._queue_write(client_socket, f"${len(rdb_bytes)}\r\n".encode() + rdb_bytes)
+
+        self.replica_sockets.add(client_socket)
+
+    def _handle_replica_handshake(self):
+        host = self.replication_state.replicaof_host
+        port = self.replication_state.replicaof_port
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((host, port))
+
+        def send_command(*parts):
+            encoded = resp.encode_array([p.encode() if isinstance(p, str) else p for p in parts])
+            sock.sendall(encoded)
+
+        def read_line():
+            buf = b""
+            while not buf.endswith(b"\r\n"):
+                chunk = sock.recv(1)
+                if not chunk:
+                    raise ConnectionError("Master closed connection during handshake")
+                buf += chunk
+            return buf[:-2]
+        
+        send_command("PING")
+        print(f"Handshake: sent PING, got {read_line()!r}")
+
+        send_command("REPLCONF", "listening-port", str(self.port))
+        print(f"Handshake: sent REPLCONF listening-port, got {read_line()!r}")
+
+        send_command("REPLCONF", "capa", "psync2")
+        print(f"Handshake: sent REPLCONF capa psync2, got {read_line()!r}")
+
+        send_command("PSYNC", "?", "-1")
+        fullresync_line = read_line()
+        print(f"Handshake: sent PSYNC, got {fullresync_line!r}")
+
+        length_line = read_line()
+        rdb_len = int(length_line[1:])
+        rdb_bytes = b""
+        while len(rdb_bytes) < rdb_len:
+            chunk = sock.recv(rdb_len - len(rdb_bytes))
+            if not chunk:
+                raise ConnectionError("Master closed connection during RDB transfer")
+            rdb_bytes += chunk
+        print(f"Handshake: received {len(rdb_bytes)} bytes of RDB, handshake complete")
+
+        return sock
+
+    def _propagate_to_replicas(self, command):
+        if not self.replica_sockets:
+            return
+        print(f"Propagating to {len(self.replica_sockets)} replica(s): {command}")
+        encoded = resp.encode_array([p.encode() if isinstance(p, str) else p for p in command])
+        for replica_socket in list(self.replica_sockets):
+            self._queue_write(replica_socket, encoded)
+        self.replication_state.master_repl_offset += len(encoded)
 
     def _handle_client_readable(self, client_socket):
         if client_socket not in self.client_sockets:
@@ -113,6 +190,8 @@ class RedisServer:
 
         reader = self.readers[client_socket]
         reader.feed(data)
+
+        WRITE_COMMANDS = {"SET", "DEL", "RPUSH", "LPUSH", "LPOP", "RPOP", "INCR", "XADD"}
 
         while True:
             try:
@@ -149,6 +228,58 @@ class RedisServer:
             # for stateful commands
             if len(command) >= 2:
                 self.conn_state.on_write_command(cmd_name, command[1])
+
+            if cmd_name in WRITE_COMMANDS and not reply.startswith(b"-"):
+                self._propagate_to_replicas(command)
+
+    def _handle_master_readable(self):
+        try:
+            data = self.master_conn.recv(4096)
+        except socket.error as e:
+            if e.errno != errno.EWOULDBLOCK:
+                print(f"Master connection error: {e}.")
+            return
+        if not data:
+            print(f"Master closed the connection.")
+            self.master_conn = None
+            return
+
+        self.master_reader.feed(data)
+
+        while True:
+            try:
+                command = self.master_reader.try_parse_command()
+            except resp.RESPParseError:
+                print("Protocol error on master connection")
+                return
+            if command is None:
+                break
+            if not command:
+                continue
+
+            cmd_name = command[0].upper()
+
+            encoded = resp.encode_array([p.encode() if isinstance(p, str) else p for p in command])
+
+            # REPLCONF GETACK
+            if (
+                cmd_name == "REPLCONF"
+                and len(command) >= 3
+                and command[1].upper() == "GETACK"
+                and command[2] == "*"
+            ):
+                ack = resp.encode_array([
+                    "REPLCONF",
+                    "ACK",
+                    str(self.replication_state.master_repl_offset)
+                ])
+                self.master_conn.sendall(ack)
+                # self.master_conn.send(ack)
+                continue
+            commands.dispatch(self.storage, command)
+
+            self.replication_state.master_repl_offset += len(encoded)
+            print(f"Applied from master: {command}")
 
     def _handle_client_writable(self, client_socket):
         buf = self.out_buffers.get(client_socket)

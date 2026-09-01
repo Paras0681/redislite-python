@@ -221,6 +221,8 @@ COMMAND = {
     "LRANGE": lrange_command,
     "LPOP": lpop_command,
     "RPOP": rpop_command,
+    "LPUSH": lpush_command,
+    "RPUSH": rpush_command,
     "TYPE": type_command,
     "XADD": xadd_command,
     "XRANGE": x_range_command,
