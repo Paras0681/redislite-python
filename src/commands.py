@@ -25,11 +25,15 @@ def echo_command(storage, args):
     return resp.encode_bulk_string(args[0])
 
 def set_command(storage, args):
-    if len(args) < 2:
-        return resp.encode_error("ERR wrong number of arguments for 'SET' command.")
-    key, value = args[0], args[1]
     px = None
     ex = None
+    if len(args) < 2:
+        return resp.encode_error("ERR wrong number of arguments for 'SET' command.")
+    if "PX" in [arg.upper() for arg in args]:
+        px = int(args[args.index("PX") + 1])
+    if "EX" in [arg.upper() for arg in args]:
+        ex = int(args[args.index("EX") + 1])
+    key, value = args[0], args[1]
     storage.set(key, value, px=px, ex=ex)
     return resp.encode_simple_string("OK")
 
@@ -209,6 +213,15 @@ def incr_command(storage, args):
         return resp.encode_error(str(e))
     return resp.encode_integer(result)
 
+def keys_command(storage, args):
+    if len(args) != 1:
+        return resp.encode_error("ERR wrong number of arguments for 'KEYS' command.")
+    pattern = args[0]
+    if pattern != "*":
+        return resp.encode_error("ERR only '*' pattern is supported for KEYS.")
+    keys = storage.get_keys()
+    return resp.encode_array(keys)
+
 COMMAND = {
     "PING": ping_command,
     "PONG": pong_command,
@@ -228,6 +241,7 @@ COMMAND = {
     "XRANGE": x_range_command,
     "XREAD": x_read_command,
     "INCR": incr_command,
+    "KEYS" : keys_command,
 }
 
 def dispatch(storage, parts):

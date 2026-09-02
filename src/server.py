@@ -2,7 +2,7 @@
 Single-Threaded nonblocking TCP server with a select-based event loop.
 
 """
-
+import os
 import errno
 import socket
 import select
@@ -13,10 +13,18 @@ from . import resp
 from .config import parse_args
 from .storage import Storage
 from .connection_state import ConnectionState
-
+from . import rdb
 
 class RedisServer:
-    def __init__(self, host="0.0.0.0", port=6379, replicaof_host=None, replicaof_port=None):
+    def __init__(
+            self, 
+            host="0.0.0.0", 
+            port=6379, 
+            replicaof_host=None, 
+            replicaof_port=None, 
+            dir='.', 
+            dbfilename="dump.rdb"
+        ):
         self.host = host
         self.port = port
         self.running = True
@@ -38,6 +46,9 @@ class RedisServer:
         self.master_conn = None
         self.master_reader = None
 
+        self.config_dir = dir
+        self.config_dbfilename = dbfilename
+
 
     def start(self):
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -45,6 +56,9 @@ class RedisServer:
         self.server_socket.setblocking(False)
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(128)
+
+        filepath = os.path.join(self.config_dir, self.config_dbfilename)
+        rdb.load_rdb(self.storage, filepath)
 
         if self.replication_state.replicaof_host is not None:
             self.master_conn = self._handle_replica_handshake()
@@ -174,6 +188,17 @@ class RedisServer:
             self._queue_write(replica_socket, encoded)
         self.replication_state.master_repl_offset += len(encoded)
 
+    def _handle_config(self, client_socket, args):
+        if len(args) < 2 or args[0].upper() != "GET":
+            self._queue_write(client_socket, resp.encode_error("ERR syntax error."))
+            return
+        param = args[1].lower()
+        values = {"dir": self.config_dir, "dbfilename": self.config_dbfilename}
+        if param not in values:
+            self._queue_write(client_socket, resp.encode_array([]))
+            return
+        self._queue_write(client_socket, resp.encode_array([param, values[param]]))
+
     def _handle_client_readable(self, client_socket):
         if client_socket not in self.client_sockets:
             return
@@ -220,6 +245,10 @@ class RedisServer:
 
             if cmd_name == "PSYNC":
                 self._handle_psync(client_socket, command[1:])
+                continue
+
+            if cmd_name == "CONFIG":
+                self._handle_config(client_socket, command[1:])
                 continue
 
             reply = commands.dispatch(self.storage, command)
@@ -340,6 +369,8 @@ def main():
         port=config.port,
         replicaof_host=config.replicaof_host,
         replicaof_port=config.replicaof_port,
+        dir=config.dir,
+        dbfilename=config.dbfilename,
     )
     server.start()
 

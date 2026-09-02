@@ -75,6 +75,9 @@ class Storage:
     def _bump(self, key):
         self._versions[key] = self._versions.get(key, 0)+1
 
+    def get_keys(self):
+        return list(self._data.keys())
+
     # String ops
     def set(self, key, value: str, px: int=None, ex: int=None):
         self._data[key] = value
@@ -260,6 +263,7 @@ class Storage:
         if not stream.entries:
             return "0-0"
         return stream.entries[-1][0] 
+
 
 class StreamIDError(Exception):
     """

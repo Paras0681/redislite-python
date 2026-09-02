@@ -17,12 +17,16 @@ class Config:
     port: int = 6379
     replicaof_host: str = None
     replicaof_port: str = None
+    dir: str = "."
+    dbfilename: str = 'dump.rdb'
 
 def parse_args(argv=None) -> Config:
     parser = argparse.ArgumentParser(description="A REdis like server in python from scratch.")
     parser.add_argument("--port", type=int, default=6379, help="Port to listen on (default: 6379)")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Host/Interface to bind to")
     parser.add_argument("--replicaof", nargs=2, metavar=("HOST", "PORT"), default=None, help="Replicate from the master at HOST PORT (e.g  --replicaof localhost 6379)")
+    parser.add_argument("--dir", type=str, default=".", help="Directory where RDB file is stored.")
+    parser.add_argument("--dbfilename", type=str, default="dump.rdb", help="Name of the RDB file.")
     args = parser.parse_args(argv)
 
     replicaof_host, replicaof_port = None, None
@@ -35,4 +39,6 @@ def parse_args(argv=None) -> Config:
         port=args.port,
         replicaof_host=replicaof_host,
         replicaof_port=replicaof_port,
+        dir = args.dir,
+        dbfilename=args.dbfilename,
     )
