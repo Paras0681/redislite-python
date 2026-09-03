@@ -19,6 +19,9 @@ class Config:
     replicaof_port: str = None
     dir: str = "."
     dbfilename: str = 'dump.rdb'
+    appendonly: str = "no"
+    appenddirname: str = "."
+
 
 def parse_args(argv=None) -> Config:
     parser = argparse.ArgumentParser(description="A REdis like server in python from scratch.")
@@ -27,6 +30,8 @@ def parse_args(argv=None) -> Config:
     parser.add_argument("--replicaof", nargs=2, metavar=("HOST", "PORT"), default=None, help="Replicate from the master at HOST PORT (e.g  --replicaof localhost 6379)")
     parser.add_argument("--dir", type=str, default=".", help="Directory where RDB file is stored.")
     parser.add_argument("--dbfilename", type=str, default="dump.rdb", help="Name of the RDB file.")
+    parser.add_argument("--appendonly", type=str, default="no", help="Type of the AOF file.")
+    parser.add_argument("--appenddirname", type=str, default="appendonlydir", help="Directory where AOF file will be stored.")
     args = parser.parse_args(argv)
 
     replicaof_host, replicaof_port = None, None
@@ -41,4 +46,6 @@ def parse_args(argv=None) -> Config:
         replicaof_port=replicaof_port,
         dir = args.dir,
         dbfilename=args.dbfilename,
+        appendonly=args.appendonly,
+        appenddirname=args.appenddirname,
     )

@@ -23,7 +23,10 @@ class RedisServer:
             replicaof_host=None, 
             replicaof_port=None, 
             dir='.', 
-            dbfilename="dump.rdb"
+            dbfilename="dump.rdb",
+            appendonly="no",
+            appenddirname='appendonlydir',
+
         ):
         self.host = host
         self.port = port
@@ -49,6 +52,9 @@ class RedisServer:
         self.config_dir = dir
         self.config_dbfilename = dbfilename
 
+        self.config_appendonly = appendonly
+        self.config_appenddirname = appenddirname
+
 
     def start(self):
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -59,6 +65,15 @@ class RedisServer:
 
         filepath = os.path.join(self.config_dir, self.config_dbfilename)
         rdb.load_rdb(self.storage, filepath)
+
+        if self.config_appendonly.lower() == "yes":
+            aof_dir = os.path.join(self.config_dir, self.config_appenddirname)
+            os.makedirs(aof_dir, exist_ok=True)
+            self.aof_path = os.path.join(aof_dir, "appendonly.aof")
+            open(self.aof_path, "ab").close()
+            self._load_aof()
+        else:
+            self.aof_path = None
 
         if self.replication_state.replicaof_host is not None:
             self.master_conn = self._handle_replica_handshake()
@@ -199,6 +214,39 @@ class RedisServer:
             return
         self._queue_write(client_socket, resp.encode_array([param, values[param]]))
 
+
+    def _append_to_aof(self, command):
+        if not self.aof_path:
+            return
+        encoded = resp.encode_array([
+            arg.encode() if isinstance(arg, str) else arg
+            for arg in command
+        ])
+
+        with open(self.aof_path, "ab") as f:
+            f.write(encoded)
+            f.flush()
+
+    def _load_aof(self):
+        if not self.aof_path or not os.path.exists(self.aof_path):
+            return
+
+        with open(self.aof_path, "rb") as f:
+            reader = resp.RESPReader()
+
+            while True:
+                data = f.read(4096)
+                if not data:
+                    break
+                reader.feed(data)
+
+                while True:
+                    command = reader.try_parse_command()
+                    if command is None:
+                        break
+                    if command:
+                        commands.dispatch(self.storage, command)
+
     def _handle_client_readable(self, client_socket):
         if client_socket not in self.client_sockets:
             return
@@ -259,6 +307,7 @@ class RedisServer:
                 self.conn_state.on_write_command(cmd_name, command[1])
 
             if cmd_name in WRITE_COMMANDS and not reply.startswith(b"-"):
+                self._append_to_aof(command)
                 self._propagate_to_replicas(command)
 
     def _handle_master_readable(self):
@@ -371,6 +420,8 @@ def main():
         replicaof_port=config.replicaof_port,
         dir=config.dir,
         dbfilename=config.dbfilename,
+        appendonly=config.appendonly,
+        appenddirname=config.appenddirname,
     )
     server.start()
 
