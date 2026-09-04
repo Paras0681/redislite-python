@@ -8,7 +8,6 @@ References: https://github.com/mehadiproman/Building-Redis-From-Scratch/
 References: https://redis.io/docs/reference/protocol-spec/
 """
 
-
 CRLF = b"\r\n"
 
 class RESPParseError(Exception):

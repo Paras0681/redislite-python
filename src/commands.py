@@ -6,11 +6,13 @@ AFTER the command name and returns byte-string i.e RESP-encoded byte string as a
 
 from . import resp
 from . import storage as storage_module
+
 def ping_command(storage, args):
     """PING command is for the client to know that the server is working."""
     if not args:
         return resp.encode_simple_string("PONG")
-    return resp.encode_bulk_string(args[0])
+    message = " ".join(args)
+    return resp.encode_bulk_string(message.encode())
 
 def pong_command(storage, args):
     """PONG command is same as the PING to check the working server."""

@@ -33,6 +33,9 @@ class ConnectionState:
         # For WATCH/UNWATCH command
         self.watched_keys = {}
 
+        # Pub/Sub
+        self.subscriptions = {}
+
     # COMMAND entry point from the server
     def dispatch(self, client_socket, command):
         """
@@ -44,6 +47,24 @@ class ConnectionState:
         path and its own RPUSH/LPUSH/XADD side-effect hooks.
         """
         cmd_name = command[0].upper()
+
+        if cmd_name == "PING":
+            message = " ".join(command[1:])
+
+            return resp.encode_array([
+                resp.encode_bulk_string(b"PONG"),
+                resp.encode_bulk_string(message.encode()),
+            ])
+
+        #Pub/Sub subscribed mode
+        if client_socket in self.subscriptions:
+            allowed = {"SUBSCRIBE", "UNSUBSCRIBE", "PING"}
+            if cmd_name not in allowed:
+                self.queue_write(
+                    client_socket,
+                    resp.encode_error("ERR can't execute this command in SUBSCRIBED MODE.")
+                )
+                return True
 
         if cmd_name == "BLPOP":
             self._handle_blpop(client_socket, command[1:])
@@ -85,6 +106,23 @@ class ConnectionState:
 
         if cmd_name == "UNWATCH":
             self._handle_unwatch(client_socket, command[1:])
+            return True
+
+        if cmd_name == "SUBSCRIBE":
+            self._handle_subscribe(client_socket, command[1:])
+            return True
+
+        if cmd_name == "UNSUBSCRIBE":
+            self._handle_unsubscribe(client_socket, command[1:])
+            return True
+
+        if cmd_name == "PUBLISH":
+            if len(command) < 3:
+                self.queue_write(
+                    client_socket, 
+                    resp.encode_error("ERR wrong number of arguments for 'PUBLISH' command.")
+                )
+            self._handle_publish(client_socket, command[1], " ".join(command[2:]))
             return True
 
         if client_socket in self.transactions:
@@ -341,3 +379,61 @@ class ConnectionState:
             if deadline is not None and now >= deadline:
                 self.queue_write(client_socket, timeout_reply)
                 self._unblock(client_socket, blocked_dict, waiters_dict, key_iter)
+
+    def _handle_subscribe(self, client_socket, channels):
+        if not channels:
+            self._queue_write(
+                client_socket, 
+                resp.encode_error("ERR wrong number of arguments for 'SUBSCRIBE' command.")
+            )
+        subscribed = self.subscriptions.setdefault(client_socket, set())
+
+        for channel in channels:
+            subscribed.add(channel)
+            reply = resp.encode_array([
+                "subscribe",
+                channel,
+                str(len(subscribed))
+            ])
+            self.queue_write(client_socket, reply)
+
+
+    def _handle_publish(self, client_socket, channel, message):
+        count = 0
+        for subscriber_socket, channels in self.subscriptions.items():
+            if channel in channels:
+                self.queue_write(
+                    subscriber_socket,
+                    resp.encode_array([
+                        "message",
+                        channel,
+                        message
+                    ])
+                )
+                count+=1
+            self.queue_write(
+                client_socket,
+                resp.encode_integer(count)
+            )
+
+    def _handle_unsubscribe(self, client_socket, channels):
+        subscribed = self.subscriptions.get(client_socket, set())
+        if channels:
+            for channel in channels:
+                subscribed.discard(channel)
+                self.queue_write(
+                    client_socket,
+                    resp.encode_array([
+                        "UNSUBSCRIBE",
+                        channel,
+                        str(len(subscribed))
+                    ])
+                )
+        else:
+            while subscribed:
+                channel = subscribed.pop()
+                self.queue_write(client_socket, resp.encode_array([
+                    "UNSUBSCRIBE",
+                    channel,
+                    str(len(subscribed))
+                ]))

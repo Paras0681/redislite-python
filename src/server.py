@@ -55,6 +55,8 @@ class RedisServer:
         self.config_appendonly = appendonly
         self.config_appenddirname = appenddirname
 
+        self.subscriptions = {}
+
 
     def start(self):
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
