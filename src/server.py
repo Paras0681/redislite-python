@@ -26,6 +26,7 @@ class RedisServer:
             dbfilename="dump.rdb",
             appendonly="no",
             appenddirname='appendonlydir',
+            requirepass=None,
 
         ):
         self.host = host
@@ -38,6 +39,9 @@ class RedisServer:
         self.client_addresses = {}
 
         self.storage = Storage()
+        if requirepass:
+            self.storage.set_password(requirepass)
+
         self.conn_state = ConnectionState(self.storage, self._queue_write)
 
         self.replication_state = ReplicationState(
@@ -113,6 +117,7 @@ class RedisServer:
     def _accept_new_connection(self):
         try:
             client_socket, address = self.server_socket.accept()
+            self.conn_state.authenticated[client_socket] = False
         except socket.error:
             return
         client_socket.setblocking(False)
@@ -424,6 +429,7 @@ def main():
         dbfilename=config.dbfilename,
         appendonly=config.appendonly,
         appenddirname=config.appenddirname,
+        requirepass=config.requirepass
     )
     server.start()
 

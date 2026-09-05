@@ -5,7 +5,7 @@ Lazy expiry: A key past TTL-TimeToLive manages to expire the exisiting data.
 """
 
 import time
-
+import hashlib
 
 class Storage:
     def __init__(self):
@@ -16,6 +16,13 @@ class Storage:
         self._data = {}
         self._expires = {}
         self._versions = {} 
+        self.sorted_sets = {}
+        self.users = {
+            "default": {
+                "passwords": set(),
+                "nopass": True
+            }
+        }
 
     def _now_ms(self):
         return int(time.time() * 1000)
@@ -77,6 +84,11 @@ class Storage:
 
     def get_keys(self):
         return list(self._data.keys())
+
+    def set_password(self, password):
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        self.users["default"]["passwords"] = {password_hash}
+        self.users["default"]["nopass"] = False
 
     # String ops
     def set(self, key, value: str, px: int=None, ex: int=None):

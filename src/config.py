@@ -21,6 +21,7 @@ class Config:
     dbfilename: str = 'dump.rdb'
     appendonly: str = "no"
     appenddirname: str = "."
+    requirepass: str = None
 
 
 def parse_args(argv=None) -> Config:
@@ -32,6 +33,7 @@ def parse_args(argv=None) -> Config:
     parser.add_argument("--dbfilename", type=str, default="dump.rdb", help="Name of the RDB file.")
     parser.add_argument("--appendonly", type=str, default="no", help="Type of the AOF file.")
     parser.add_argument("--appenddirname", type=str, default="appendonlydir", help="Directory where AOF file will be stored.")
+    parser.add_argument("--requirepass", type=str, default=None, help="Password required to authenticate with the server.")
     args = parser.parse_args(argv)
 
     replicaof_host, replicaof_port = None, None
@@ -48,4 +50,5 @@ def parse_args(argv=None) -> Config:
         dbfilename=args.dbfilename,
         appendonly=args.appendonly,
         appenddirname=args.appenddirname,
+        requirepass=args.requirepass
     )

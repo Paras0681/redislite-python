@@ -5,7 +5,6 @@ AFTER the command name and returns byte-string i.e RESP-encoded byte string as a
 """
 
 from . import resp
-from . import storage as storage_module
 
 def ping_command(storage, args):
     """PING command is for the client to know that the server is working."""
@@ -153,7 +152,7 @@ def xadd_command(storage, args):
        new_id = storage.xadd(key, ms_str, seq_str, fields)
     except TypeError:
         return resp.encode_error("WRONGTYPE of operation against key holding wrong value.")
-    except storage_module.StreamIDError as e:
+    except storage.StreamIDError as e:
         return resp.encode_error(str(e))
     return resp.encode_simple_string(new_id)
 
@@ -224,6 +223,97 @@ def keys_command(storage, args):
     keys = storage.get_keys()
     return resp.encode_array(keys)
 
+def zadd_command(storage, args):
+    if len(args) < 3 or len(args) % 2 == 0:
+        return resp.encode_error("ERR wrong number of arguments for 'ZADD' command.")
+
+    added = 0
+    key = args[0]
+
+    if key not in storage.sorted_sets:
+        storage.sorted_sets[key] = {}
+
+    for i in range(1, len(args), 2):
+        score = float(args[i])
+        member = args[i+1]
+
+        if member not in storage.sorted_sets[key]:
+            added+=1
+        storage.sorted_sets[key][member] = score
+
+    return resp.encode_integer(added)
+
+def zrange_command(storage, args):
+    if len(args) != 3:
+        return resp.encode_error("ERR wrong number of arguments for 'ZRANGE' command.")
+    key = args[0]
+    start = int(args[1])
+    stop = int(args[2])
+
+    data = storage.sorted_sets[key]
+    sorted_members = sorted(data.items(),key=lambda x: (x[1], x[0])) 
+    members = [member for member, score in sorted_members]
+    if start < 0:
+        start = max(len(members) + start, 0)
+    if stop < 0:
+        stop = len(members) + stop
+    if start > stop or start >= len(members):
+        return resp.encode_array([])
+    return resp.encode_array(members[start:stop+1])
+
+def zrank_command(storage, args):
+    if len(args) != 2:
+        return resp.encode_error("ERR wrong number of arguments for 'ZRANK' command.")
+
+    key = args[0]
+    member = args[1]
+
+    data = storage.sorted_sets[key]
+    if data is None or member not in data:
+        return resp.encode_null()
+
+    sorted_members = sorted(
+        data.items(),
+        key=lambda x: (x[1], x[0])
+    )
+    for rank, (name, score) in enumerate(sorted_members):
+        if name == member:
+            return resp.encode_integer(rank)
+
+def zcard_command(storage, args):
+    if len(args) != 1:
+        return resp.encode_error("ERR wrong number of arguments for 'ZCARD' command.")
+    data = storage.sorted_sets[args[0]]
+    return resp.encode_integer(len(data)if data else 0)
+
+def zscore_command(storage, args):
+    if len(args) != 2:
+        return resp.encode_error("ERR wrong number of arguments for 'ZSCORE' command.")
+    key = args[0]
+    data = storage.sorted_sets[key]
+
+    if data is None or args[1] not in data:
+        return resp.encode_null()
+    return resp.encode_bulk_string(str(data[key][args[1]]).encode())
+
+def zrem_command(storage, args):
+    if len(args) < 2:
+        return resp.encode_error("ERR wrong number of arguments for 'ZREM' command.")
+    key = args[0]
+    data = storage.sorted_sets.get(key)
+    if data is None:
+        return resp.encode_integer(0)
+
+    removed = 0
+    for member in args[1:]:
+        if member in data:
+            del data[member]
+            removed+=1
+    if not data:
+        storage.sorted_sets.pop(key)
+    return resp.encode_integer(removed)
+
+
 COMMAND = {
     "PING": ping_command,
     "PONG": pong_command,
@@ -244,6 +334,12 @@ COMMAND = {
     "XREAD": x_read_command,
     "INCR": incr_command,
     "KEYS" : keys_command,
+    "ZADD": zadd_command,
+    "ZRANGE": zrange_command,
+    "ZRANK": zrank_command,
+    "ZCARD": zcard_command,
+    "ZSCORE": zscore_command,
+    "ZREM": zrem_command,
 }
 
 def dispatch(storage, parts):

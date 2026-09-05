@@ -40,13 +40,19 @@ def encode_null_array() -> bytes:
     """Null array in RESP byte string."""
     return b"*-1\r\n"
 
+def encode_null():
+    return b"$-1\r\n"
+
 def encode_array(items: list) -> bytes:
     """Array in RESP byte string."""
     if items is None:
         return encode_null_array()
     out = [f"*{len(items)}\r\n".encode()]
     for item in items:
-        out.append(encode_bulk_string(item))
+        if isinstance(item, list):
+            out.append(encode_array(item))
+        else:
+            out.append(encode_bulk_string(item))
     return b"".join(out)
 
 def encode_nested_array(entries: list) -> bytes:

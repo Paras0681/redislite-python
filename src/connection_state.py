@@ -9,10 +9,10 @@ commands.py's stateless command table.
 
 import time
 from collections import deque
+import hashlib
 
 from . import commands
 from . import resp
-
 
 class ConnectionState:
     def __init__(self, storage, queue_write):
@@ -36,6 +36,10 @@ class ConnectionState:
         # Pub/Sub
         self.subscriptions = {}
 
+        #Authentication
+        self.authenticated = {}
+
+
     # COMMAND entry point from the server
     def dispatch(self, client_socket, command):
         """
@@ -48,16 +52,32 @@ class ConnectionState:
         """
         cmd_name = command[0].upper()
 
-        if cmd_name == "PING":
-            message = " ".join(command[1:])
+        if (
+            not self.storage.users["default"]["nopass"] 
+            and not self.authenticated.get(client_socket, False)
+            and cmd_name not in {"AUTH"}
+        ):
+            self.queue_write(
+                client_socket,
+                resp.encode_error("NOAUTH Authentication required.")
+            )
+            return True
 
-            return resp.encode_array([
-                resp.encode_bulk_string(b"PONG"),
-                resp.encode_bulk_string(message.encode()),
-            ])
+        if client_socket in self.subscriptions and self.subscriptions[client_socket]:
+            if cmd_name == "PING":
+                message = " ".join(command[1:])
+
+                self.queue_write(
+                    client_socket,
+                    resp.encode_array([
+                        "pong",
+                        message
+                    ])
+                )
+                return True
 
         #Pub/Sub subscribed mode
-        if client_socket in self.subscriptions:
+        if client_socket in self.subscriptions and self.subscriptions[client_socket]:
             allowed = {"SUBSCRIBE", "UNSUBSCRIBE", "PING"}
             if cmd_name not in allowed:
                 self.queue_write(
@@ -134,6 +154,78 @@ class ConnectionState:
                 self.queue_write(client_socket, resp.encode_simple_string("QUEUED"))
             return True
 
+        if cmd_name == "AUTH":
+            if len(command) != 2:
+                self.queue_write(
+                    client_socket,
+                    resp.encode_error(
+                        "ERR wrong number of arguments for 'AUTH' command."
+                    )
+                )
+                return True
+            password = command[1]
+            user = self.storage.users["default"]
+            password_hash = hashlib.sha256(password.encode()).hexdigest()
+
+            if password_hash not in user["passwords"]:
+                self.queue_write(
+                    client_socket,
+                    resp.encode_error("WRONGPASS username-password pair is invalid.")
+                )
+                return True
+            self.authenticated[client_socket] = True
+            self.queue_write(client_socket, resp.encode_simple_string("OK"))
+            return True
+
+        if cmd_name == "ACL":
+            if len(command) < 2:
+                self.queue_write(
+                    client_socket,
+                    resp.encode_error("ERR wrong number of arguments for 'ACL' command.")
+                )
+                return True
+            sub_command = command[1].upper()
+            if sub_command == "WHOAMI":
+                self.queue_write(
+                    client_socket,
+                    resp.encode_bulk_string(b"default")
+                )
+                return True
+
+            if sub_command == "GETUSER":
+                if len(command) != 3:
+                    self.queue_write(
+                        client_socket,
+                        resp.encode_error(
+                            "ERR wrong number of arguments for 'ACL GETUSER' command."
+                        )
+                    )
+                    return True
+
+                username = command[2]
+                user = self.storage.users.get(username)
+                if user is None:
+                    self.queue_write(client_socket, resp.encode_null())
+                    return True
+                reply = [
+                    "flags",
+                    ["on", "nopass"] if user["nopass"] else ["on"],
+                    "passwords",
+                    list(user["passwords"]),
+                    "commands",
+                    "+@all",
+                    "keys",
+                    "~*",
+                    "channels",
+                    "",
+                    "selectors",
+                    "",
+                ]
+                self.queue_write(
+                    client_socket,
+                    resp.encode_array(reply)
+                )
+                return True
         return False
 
     def on_write_command(self, cmd_name, key):
